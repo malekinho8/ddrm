@@ -9,16 +9,17 @@ import torch
 import torch.utils.data as data
 import cv2
 
-from models.diffusion import Model
-from datasets import get_dataset, data_transform, inverse_data_transform
-from functions.ckpt_util import get_ckpt_path, download
-from functions.denoising import efficient_generalized_steps
+from ddrm_codes_2.models.diffusion import Model
+from ddrm_codes_2.datasets import get_dataset, data_transform, inverse_data_transform
+from ddrm_codes_2.functions.ckpt_util import get_ckpt_path, download
+from ddrm_codes_2.functions.denoising import efficient_generalized_steps
 
 import torchvision.utils as tvu
+from torchvision.transforms import InterpolationMode, Resize
 
-from guided_diffusion.unet import UNetModel
+from ddrm_codes_2.guided_diffusion.unet import UNetModel
 from denoising_diffusion_pytorch import Unet, GaussianDiffusion, Trainer
-from guided_diffusion.script_util import create_model, create_classifier, classifier_defaults, args_to_dict
+from ddrm_codes_2.guided_diffusion.script_util import create_model, create_classifier, classifier_defaults, args_to_dict
 import random
 
 def get_beta_schedule(beta_schedule, *, beta_start, beta_end, num_diffusion_timesteps):
@@ -69,8 +70,8 @@ def get_beta_schedule(beta_schedule, *, beta_start, beta_end, num_diffusion_time
 
 
 class Diffusion(object):
-    def __init__(self, args, config, device=None):
-        self.args = args
+    def __init__(self, config, device=None):
+        self.args = config.args
         self.config = config
         if device is None:
             device = (
@@ -120,11 +121,11 @@ class Diffusion(object):
             else:
                 raise ValueError
             if name != 'celeba_hq':
-                ckpt = get_ckpt_path(f"ema_{name}", prefix=self.args.exp)
+                ckpt = get_ckpt_path(f"ema_{name}", prefix=self.config.args.exp)
                 print("Loading checkpoint {}".format(ckpt))
             elif name == 'celeba_hq':
                 #ckpt = '~/.cache/diffusion_models_converted/celeba_hq.ckpt'
-                ckpt = os.path.join(self.args.exp, "logs/celeba/celeba_hq.ckpt")
+                ckpt = os.path.join(self.config.args.exp, "logs/celeba/celeba_hq.ckpt")
                 if not os.path.exists(ckpt):
                     download('https://image-editing-test-12345.s3-us-west-2.amazonaws.com/checkpoints/celeba_hq.ckpt', ckpt)
             else:
@@ -139,11 +140,11 @@ class Diffusion(object):
             if self.config.model.use_fp16:
                 model.convert_to_fp16()
             if self.config.model.class_cond:
-                ckpt = os.path.join(self.args.exp, 'logs/imagenet/%dx%d_diffusion.pt' % (self.config.data.image_size, self.config.data.image_size))
+                ckpt = os.path.join(self.config.args.exp, 'logs/imagenet/%dx%d_diffusion.pt' % (self.config.data.image_size, self.config.data.image_size))
                 if not os.path.exists(ckpt):
                     download('https://openaipublic.blob.core.windows.net/diffusion/jul-2021/%dx%d_diffusion_uncond.pt' % (self.config.data.image_size, self.config.data.image_size), ckpt)
             else:
-                ckpt = os.path.join(self.args.exp, "logs/imagenet/256x256_diffusion_uncond.pt")
+                ckpt = os.path.join(self.config.args.model_dir, self.config.args.model_folder, self.config.args.model_name)
                 if not os.path.exists(ckpt):
                     download('https://openaipublic.blob.core.windows.net/diffusion/jul-2021/256x256_diffusion_uncond.pt', ckpt)
                 
@@ -154,7 +155,7 @@ class Diffusion(object):
             model = torch.nn.DataParallel(model)
 
             if self.config.model.class_cond:
-                ckpt = os.path.join(self.args.exp, 'logs/imagenet/%dx%d_classifier.pt' % (self.config.data.image_size, self.config.data.image_size))
+                ckpt = os.path.join(self.config.args.exp, 'logs/imagenet/%dx%d_classifier.pt' % (self.config.data.image_size, self.config.data.image_size))
                 if not os.path.exists(ckpt):
                     image_size = self.config.data.image_size
                     download('https://openaipublic.blob.core.windows.net/diffusion/jul-2021/%dx%d_classifier.pt' % image_size, ckpt)
@@ -177,24 +178,26 @@ class Diffusion(object):
                 cls_fn = cond_fn
 
         elif self.config.model.type == 'ddpm_ho':
-            model = Unet(dim=self.config.model.ch, dim_mults=self.config.model.ch_mult, channels=self.config.model.in_channels)
-            diffusion = GaussianDiffusion(
-                model, 
-                channels= self.config.data.channels, # use 1 channel for grayscale images
-                image_size = self.config.data.image_size, # must be square images (for now)
-                timesteps = self.config.diffusion.num_diffusion_timesteps,   # number of steps
-                loss_type = 'l2'    # L1 or L2
-            )
-
-            if self.config.data.dataset == "USGS_monterey_bay":
-                name = 'usgs'
-            
-            # change this later as you add in more use cases (if applicable)
-            if name == 'usgs':
-                ckpt = os.path.join(self.args.exp, f"logs{os.path.sep}bathymetry_models{os.path.sep}model-76.pt")
+            # define the 
+            ckpt = os.path.join(self.args.model_dir, self.args.model_folder, self.config.model.file_name)
+            mdata = torch.load(ckpt, map_location=self.device)
             
             # load the model
-            diffusion.load_state_dict(torch.load(ckpt, map_location=self.device)['model'])
+            if 'diffusion_model' not in mdata:
+                model = Unet(dim=self.config.model.ch, dim_mults=self.config.model.ch_mult, channels=self.config.model.in_channels)
+                diffusion = GaussianDiffusion(
+                    model, 
+                    channels= self.config.data.channels, # use 1 channel for grayscale images
+                    image_size = self.config.data.image_size, # must be square images (for now)
+                    timesteps = self.config.diffusion.num_diffusion_timesteps,   # number of steps
+                    loss_type = 'l2'    # L1 or L2
+                )
+                diffusion.load_state_dict(torch.load(ckpt, map_location=self.device)['model'])
+            else:
+                diffusion = mdata['diffusion_model']
+                diffusion.load_state_dict(mdata['model'])
+                self.num_timesteps = diffusion.num_timesteps
+                
             model = diffusion.denoise_fn
             model.to(self.device)
             model.eval()
@@ -203,8 +206,8 @@ class Diffusion(object):
         self.sample_sequence(model, cls_fn)
 
     def sample_sequence(self, model, cls_fn=None):
-        args, config = self.args, self.config
-        out_folder = self.config.sampling.out_folder
+        args, config = self.config.args, self.config
+        out_folder = os.path.join(config.args.image_folder)
 
         if not os.path.exists(out_folder):
             os.mkdir(out_folder)
@@ -229,7 +232,7 @@ class Diffusion(object):
             random.seed(worker_seed)
 
         g = torch.Generator()
-        g.manual_seed(args.seed)
+        g.manual_seed(config.args.seed)
 
         # this gives a warning that there are too many workers. Make num_workers = 0 for now
         val_loader = data.DataLoader(
@@ -250,20 +253,48 @@ class Diffusion(object):
         H_funcs = None
         if deg[:2] == 'cs':
             compress_by = int(deg[2:])
-            from functions.svd_replacement import WalshHadamardCS
+            from ddrm_codes_2.functions.svd_replacement import WalshHadamardCS
             H_funcs = WalshHadamardCS(config.data.channels, self.config.data.image_size, compress_by, torch.randperm(self.config.data.image_size**2, device=self.device), self.device)
-        elif deg[:3] == 'inp':
-            from functions.svd_replacement import Inpainting
+        elif 'inp' in deg:
+            from ddrm_codes_2.functions.svd_replacement import Inpainting
+            sflag = False
             if deg == 'inp_lolcat':
-                loaded = np.load("inp_masks/lolcat_extra.npy")
+                loaded = cv2.resize(np.load("config\\python_packages\\ddrm_codes_2\\inp_masks\\lolcat_extra.npy"),(self.config.data.image_size,self.config.data.image_size))
                 mask = torch.from_numpy(loaded).to(self.device).reshape(-1)
                 missing_r = torch.nonzero(mask == 0).long().reshape(-1) * 3
             elif deg == 'inp_lorem':
                 loaded = cv2.resize(np.load("inp_masks/lorem3.npy"),(self.config.data.image_size,self.config.data.image_size))
                 mask = torch.from_numpy(loaded).to(self.device).reshape(-1)
                 missing_r = torch.nonzero(mask == 0).long().reshape(-1) * 3
-            elif deg == 'inp_half':
-                loaded = np.concatenate((np.ones((self.config.data.image_size,self.config.data.image_size//2)), np.zeros((self.config.data.image_size,self.config.data.image_size//2))),axis=1)
+            elif 'inp' in deg and '0.' in deg:
+                ratio = float(deg.split('-')[-1])
+                ones_div = 1 - ratio
+                loaded = np.concatenate((np.ones((self.config.data.image_size,int(self.config.data.image_size*ones_div))), np.zeros((self.config.data.image_size,int(self.config.data.image_size*ratio)))),axis=1)
+                mask = torch.from_numpy(loaded).to(self.device).reshape(-1)
+                missing_r = torch.nonzero(mask == 0).long().reshape(-1) * 3
+            elif 'inp' in deg and 'sr' in deg:
+                ratio = int(deg.split('sr')[-1])
+                loaded = np.zeros((self.config.data.image_size,self.config.data.image_size)) # initialize the mask
+
+                # nearest neighbor interpolation mask creation. Use ratio to determine where to sample pixels
+                for i in range(0,loaded.shape[0],ratio):
+                    for j in range(0,loaded.shape[1],ratio):
+                        loaded[i,j] = 1
+                
+                mask = torch.from_numpy(loaded).to(self.device).reshape(-1)
+                missing_r = torch.nonzero(mask == 0).long().reshape(-1) * 3
+            elif 'inp' in deg and deg[0] == 's':
+                sflag = True
+                from ddrm_codes_2.functions.svd_replacement import SuperInpainting
+
+                ratio = int(deg.split('inp')[-1])
+                loaded = np.zeros((self.config.data.image_size,self.config.data.image_size)) # initialize the mask
+
+                # nearest neighbor interpolation mask creation. Use ratio to determine where to sample pixels
+                for i in range(0,loaded.shape[0],ratio):
+                    for j in range(0,loaded.shape[1],ratio):
+                        loaded[i,j] = 1
+                
                 mask = torch.from_numpy(loaded).to(self.device).reshape(-1)
                 missing_r = torch.nonzero(mask == 0).long().reshape(-1) * 3
             else:
@@ -275,52 +306,87 @@ class Diffusion(object):
                 missing = torch.cat([missing_r, missing_g, missing_b], dim=0)
             else:
                 missing = torch.div(missing_r, 3, rounding_mode='floor') # divide by 3 because there is only 1 image channel
-
-            H_funcs = Inpainting(config.data.channels, config.data.image_size, missing, self.device)
+            if not sflag:
+                H_funcs = Inpainting(config.data.channels, config.data.image_size, missing, self.device)
+            else:
+                H_funcs = SuperInpainting(config.data.channels, config.data.image_size, missing, ratio, self.device)   
         elif deg == 'deno':
-            from functions.svd_replacement import Denoising
+            from ddrm_codes_2.functions.svd_replacement import Denoising
             H_funcs = Denoising(config.data.channels, self.config.data.image_size, self.device)
         elif deg == 'deblur_uni':
-            from functions.svd_replacement import Deblurring
+            from ddrm_codes_2.functions.svd_replacement import Deblurring
             H_funcs = Deblurring(torch.Tensor([1/9] * 9).to(self.device), config.data.channels, self.config.data.image_size, self.device)
         elif deg == 'deblur_gauss':
-            from functions.svd_replacement import Deblurring
+            from ddrm_codes_2.functions.svd_replacement import Deblurring
             sigma = 10
             pdf = lambda x: torch.exp(torch.Tensor([-0.5 * (x/sigma)**2]))
             kernel = torch.Tensor([pdf(-2), pdf(-1), pdf(0), pdf(1), pdf(2)]).to(self.device)
             H_funcs = Deblurring(kernel / kernel.sum(), config.data.channels, self.config.data.image_size, self.device)
         elif deg[:2] == 'sr':
-            blur_by = int(deg[2:])
-            from functions.svd_replacement import SuperResolution
-            H_funcs = SuperResolution(config.data.channels, config.data.image_size, blur_by, self.device)
+            if len(deg) <= 4:
+                blur_by = int(deg[2:])
+                from ddrm_codes_2.functions.svd_replacement import SuperResolution
+                H_funcs = SuperResolution(config.data.channels, config.data.image_size, blur_by, self.device)
+            elif 'test3' in deg:
+                blur_by = int(deg[2])
+                from ddrm_codes_2.functions.svd_replacement import SuperPainting
+                H_funcs = SuperPainting(config.data.channels, config.data.image_size, blur_by, self.device)
         elif deg == 'color':
-            from functions.svd_replacement import Colorization
+            from ddrm_codes_2.functions.svd_replacement import Colorization
             H_funcs = Colorization(config.data.image_size, self.device)
         else:
             print("ERROR: degradation type not supported")
             quit()
-        args.sigma_0 = 2 * args.sigma_0 #to account for scaling to [-1,1]
-        sigma_0 = args.sigma_0
+        config.args.sigma_0 = 2 * config.args.sigma_0 #to account for scaling to [-1,1]
+        sigma_0 = config.args.sigma_0
         
         print(f'Start from {args.subset_start}')
-        idx_init = args.subset_start
-        idx_so_far = args.subset_start
-        avg_psnr = 0.0
+        idx_init = config.args.subset_start
+        idx_so_far = config.args.subset_start
+        avg_psnr = 0
+        avg_psnr_bc = 0.0
         pbar = tqdm.tqdm(val_loader)
 
         for x_orig, classes in pbar:
             x_orig = x_orig.to(self.device)
             x_orig = data_transform(self.config, x_orig)
 
-            tvu.save_image((x_orig).cpu(),f'{out_folder}{os.path.sep}x_orig.png',nrow=4)
+            if not os.path.exists(f'{out_folder}{os.sep}temp'):
+                os.mkdir(f'{out_folder}{os.sep}temp')
+
+            tvu.save_image((x_orig).cpu(),f'{out_folder}{os.sep}temp{os.sep}x_orig.png',nrow=int(self.config.sampling.batch_size**0.5))
+            
+            if x_orig.shape[1] != self.config.data.channels:
+                x_orig = x_orig.repeat([1,3,1,1])
 
             y_0 = H_funcs.H(x_orig) # applies degradation matrix
             y_0 = y_0 + sigma_0 * torch.randn_like(y_0) # add a little bit of noise to the corrupted vector
-
-            pinv_y_0 = H_funcs.H_pinv(y_0).view(y_0.shape[0], config.data.channels, self.config.data.image_size, self.config.data.image_size) # multiply by pseudo-inverse of H
             
-            tvu.save_image((pinv_y_0).cpu(),f'{out_folder}{os.path.sep}pinv_y_0.png',nrow=4)
+            # note: view is used here in the same way that reshape would be used; view is good though because it conserves memory
+            pinv_y_0 = H_funcs.H_pinv(y_0).view(y_0.shape[0], self.config.data.channels, self.config.data.image_size, self.config.data.image_size) # multiply degraded vector by pseudo-inverse of H
+            
+            tvu.save_image((pinv_y_0).cpu(),f'{out_folder}{os.path.sep}temp{os.sep}pinv_y_0.png',nrow=int(self.config.sampling.batch_size**0.5))
+            
 
+            # perform bicubic interpolation and save for reference
+            if deg[:2] == 'sr':
+                y_scaled = inverse_data_transform(config, y_0.clip(-1,1)).view(x_orig.shape[0], x_orig.shape[1], x_orig.shape[-1]//H_funcs.ratio,x_orig.shape[-1]//H_funcs.ratio)
+                bc_out = Resize(x_orig.shape[-1], interpolation=InterpolationMode.BICUBIC)(y_scaled).to(self.device)
+                tvu.save_image((bc_out).cpu(),f'{out_folder}{os.path.sep}temp{os.sep}bc_out.png',nrow=int(self.config.sampling.batch_size**0.5))
+            # elif deg[:3] == 'inp':
+            #     N = x_orig.shape[-1]
+            #     flat_mask = mask.flatten()
+            #     x = np.mod(np.arange(image.size), N) # why are we doing this?
+            #     y = np.arange(image.size) // N # why is this not modulus operator?
+            #     mask_image = image * mask
+            #     values = mask_image.flatten()
+            #     interp_function = scipy.interpolate.LinearNDInterpolator(points[flat_mask], values[flat_mask])
+            #     interp_image = mask_image.copy()
+            #     interp_image[~mask] = interp_function(x[~flat_mask], y[~flat_mask])
+            #     interp_function(x[~flat_mask], y[~flat_mask])
+
+
+            
             if deg == 'deblur_uni' or deg == 'deblur_gauss': pinv_y_0 = y_0.view(y_0.shape[0], config.data.channels, self.config.data.image_size, self.config.data.image_size)
             elif deg == 'color': pinv_y_0 = y_0.view(y_0.shape[0], 1, self.config.data.image_size, self.config.data.image_size).repeat(1, 3, 1, 1)
             elif deg[:3] == 'inp': pinv_y_0 += H_funcs.H_pinv(H_funcs.H(torch.ones_like(pinv_y_0))).reshape(*pinv_y_0.shape) - 1 # adds some more inpainting text
@@ -346,7 +412,7 @@ class Diffusion(object):
 
             # NOTE: This means that we are producing each predicted x0, not x_{t-1} at timestep t.
             with torch.no_grad():
-                x, _ = self.sample_image(x, model, H_funcs, y_0, sigma_0, last=False, cls_fn=cls_fn, classes=classes, out_folder=out_folder)
+                x, _ = self.sample_image(x, model, H_funcs, y_0, sigma_0, last=False, cls_fn=cls_fn, classes=classes)
 
             end = time.time()
             elapsed = end - begin
@@ -365,23 +431,40 @@ class Diffusion(object):
                         orig = inverse_data_transform(config, x_orig[j])
                         mse = torch.mean((x[i][j].to(self.device) - orig) ** 2)
                         psnr = 10 * torch.log10(1 / mse)
-                        avg_psnr += psnr
+                        avg_psnr = avg_psnr + psnr
+
+                        # calculate bicubic psnr for reference
+                        y_scaled = inverse_data_transform(config, y_0[j].clip(-1,1)).view(1, x_orig.shape[1], x_orig.shape[-1]//H_funcs.ratio,x_orig.shape[-1]//H_funcs.ratio)
+                        bc_out = Resize(orig.shape[-1], interpolation=InterpolationMode.BICUBIC)(y_scaled).to(self.device)
+                        mse_bc = torch.mean((bc_out - orig)**2)
+                        psnr_bc = 10 * torch.log10(1 / mse_bc)
+                        avg_psnr_bc = avg_psnr_bc + psnr_bc
+
+
             
 
             idx_so_far += y_0.shape[0]
 
-            pbar.set_description("PSNR: %.2f" % (avg_psnr / (idx_so_far - idx_init)))
+            temp = avg_psnr_bc / (idx_so_far - idx_init)
+            temp2 = avg_psnr / (idx_so_far - idx_init)
+
+            pbar.set_description(f'PSNR: {temp2:.2f}, PSNR-bicubic: {temp:.2f}')
 
         avg_psnr = avg_psnr / (idx_so_far - idx_init)
         print("Total Average PSNR: %.2f" % avg_psnr)
         print("Number of samples: %d" % (idx_so_far - idx_init))
 
-    def sample_image(self, x, model, H_funcs, y_0, sigma_0, last=True, cls_fn=None, classes=None, out_folder='sandbox\\default'):
-        skip = self.num_timesteps // self.args.timesteps
-        seq = range(0, self.num_timesteps, skip)
+    def sample_image(self, x, model, H_funcs, y_0, sigma_0, last=True, cls_fn=None, classes=None):
+        skip = self.num_timesteps // self.args.timesteps # 1000/20 = 50 
+        seq = range(0, self.num_timesteps, skip) # crete range from 0 to 1000 skipping 50 at each step
+        out_folder = os.path.join(self.config.args.image_folder,'temp')
+
+        if not os.path.exists(out_folder):
+            os.mkdir(out_folder)
         
         x = efficient_generalized_steps(x, seq, model, self.betas, H_funcs, y_0, sigma_0, \
             etaB=self.args.etaB, etaA=self.args.eta, etaC=self.args.eta, cls_fn=cls_fn, classes=classes, out_folder=out_folder)
         if last:
             x = x[0][-1]
         return x
+

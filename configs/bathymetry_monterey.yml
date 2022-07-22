@@ -1,0 +1,52 @@
+data:
+    dataset: "USGS_monterey_bay"
+    category: "bathymetry"
+    image_size: 64
+    channels: 1
+    logit_transform: false
+    uniform_dequantization: false
+    gaussian_dequantization: false
+    random_flip: true
+    rescaled: true
+    num_workers: 0
+    out_of_dist: false
+
+model:
+    type: "ddpm_ho"
+    in_channels: 1
+    out_ch: 1
+    ch: 64
+    ch_mult: [1, 2, 4, 8]
+    num_res_blocks: 8
+    attn_resolutions: [16, ]
+    dropout: 0.0
+    var_type: fixedsmall
+    ema_rate: 0.995
+    ema: True
+    resamp_with_conv: True
+
+diffusion:
+    beta_schedule: cosine
+    beta_start: 0.0001
+    beta_end: 0.02
+    num_diffusion_timesteps: 1000
+
+training:
+    batch_size: 32
+    n_epochs: 100
+    n_iters: 100000
+    snapshot_freq: 1000
+    validation_freq: 1000
+
+sampling:
+    batch_size: 16
+    last_only: True     
+    out_folder: 'sandbox\bathymetry_sr64_test'
+
+optim:
+    weight_decay: 0.000
+    optimizer: "Adam"
+    lr: 0.00002
+    beta1: 0.9
+    amsgrad: false
+    eps: 0.00000001

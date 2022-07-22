@@ -69,8 +69,8 @@ def get_beta_schedule(beta_schedule, *, beta_start, beta_end, num_diffusion_time
 
 
 class Diffusion(object):
-    def __init__(self, args, config, device=None):
-        self.args = args
+    def __init__(self, config, device=None):
+        self.args = config.args
         self.config = config
         if device is None:
             device = (
@@ -120,11 +120,11 @@ class Diffusion(object):
             else:
                 raise ValueError
             if name != 'celeba_hq':
-                ckpt = get_ckpt_path(f"ema_{name}", prefix=self.args.exp)
+                ckpt = get_ckpt_path(f"ema_{name}", prefix=self.config.args.exp)
                 print("Loading checkpoint {}".format(ckpt))
             elif name == 'celeba_hq':
                 #ckpt = '~/.cache/diffusion_models_converted/celeba_hq.ckpt'
-                ckpt = os.path.join(self.args.exp, "logs/celeba/celeba_hq.ckpt")
+                ckpt = os.path.join(self.config.args.exp, "logs/celeba/celeba_hq.ckpt")
                 if not os.path.exists(ckpt):
                     download('https://image-editing-test-12345.s3-us-west-2.amazonaws.com/checkpoints/celeba_hq.ckpt', ckpt)
             else:
@@ -139,11 +139,11 @@ class Diffusion(object):
             if self.config.model.use_fp16:
                 model.convert_to_fp16()
             if self.config.model.class_cond:
-                ckpt = os.path.join(self.args.exp, 'logs/imagenet/%dx%d_diffusion.pt' % (self.config.data.image_size, self.config.data.image_size))
+                ckpt = os.path.join(self.config.args.exp, 'logs/imagenet/%dx%d_diffusion.pt' % (self.config.data.image_size, self.config.data.image_size))
                 if not os.path.exists(ckpt):
                     download('https://openaipublic.blob.core.windows.net/diffusion/jul-2021/%dx%d_diffusion_uncond.pt' % (self.config.data.image_size, self.config.data.image_size), ckpt)
             else:
-                ckpt = os.path.join(self.args.exp, "logs/imagenet/256x256_diffusion_uncond.pt")
+                ckpt = os.path.join(self.config.args.exp, "logs/imagenet/256x256_diffusion_uncond.pt")
                 if not os.path.exists(ckpt):
                     download('https://openaipublic.blob.core.windows.net/diffusion/jul-2021/256x256_diffusion_uncond.pt', ckpt)
                 
@@ -154,7 +154,7 @@ class Diffusion(object):
             model = torch.nn.DataParallel(model)
 
             if self.config.model.class_cond:
-                ckpt = os.path.join(self.args.exp, 'logs/imagenet/%dx%d_classifier.pt' % (self.config.data.image_size, self.config.data.image_size))
+                ckpt = os.path.join(self.config.args.exp, 'logs/imagenet/%dx%d_classifier.pt' % (self.config.data.image_size, self.config.data.image_size))
                 if not os.path.exists(ckpt):
                     image_size = self.config.data.image_size
                     download('https://openaipublic.blob.core.windows.net/diffusion/jul-2021/%dx%d_classifier.pt' % image_size, ckpt)
@@ -186,12 +186,8 @@ class Diffusion(object):
                 loss_type = 'l2'    # L1 or L2
             )
 
-            if self.config.data.dataset == "USGS_monterey_bay":
-                name = 'usgs'
-            
-            # change this later as you add in more use cases (if applicable)
-            if name == 'usgs':
-                ckpt = os.path.join(self.args.exp, f"logs{os.path.sep}bathymetry_models{os.path.sep}model-76.pt")
+            # define the 
+            ckpt = os.path.join(self.args.model_dir, self.args.model_folder, self.config.model.file_name)
             
             # load the model
             diffusion.load_state_dict(torch.load(ckpt, map_location=self.device)['model'])
@@ -203,8 +199,8 @@ class Diffusion(object):
         self.sample_sequence(model, cls_fn)
 
     def sample_sequence(self, model, cls_fn=None):
-        args, config = self.args, self.config
-        out_folder = self.config.sampling.out_folder
+        args, config = self.config.args, self.config
+        out_folder = os.path.join(config.args.out_dir,f'{config.data.dataset}-{config.args.deg}')
 
         if not os.path.exists(out_folder):
             os.mkdir(out_folder)
@@ -229,7 +225,7 @@ class Diffusion(object):
             random.seed(worker_seed)
 
         g = torch.Generator()
-        g.manual_seed(args.seed)
+        g.manual_seed(config.args.seed)
 
         # this gives a warning that there are too many workers. Make num_workers = 0 for now
         val_loader = data.DataLoader(
@@ -299,12 +295,12 @@ class Diffusion(object):
         else:
             print("ERROR: degradation type not supported")
             quit()
-        args.sigma_0 = 2 * args.sigma_0 #to account for scaling to [-1,1]
-        sigma_0 = args.sigma_0
+        config.args.sigma_0 = 2 * config.args.sigma_0 #to account for scaling to [-1,1]
+        sigma_0 = config.args.sigma_0
         
         print(f'Start from {args.subset_start}')
-        idx_init = args.subset_start
-        idx_so_far = args.subset_start
+        idx_init = config.args.subset_start
+        idx_so_far = config.args.subset_start
         avg_psnr = 0.0
         pbar = tqdm.tqdm(val_loader)
 
@@ -312,7 +308,7 @@ class Diffusion(object):
             x_orig = x_orig.to(self.device)
             x_orig = data_transform(self.config, x_orig)
 
-            tvu.save_image((x_orig).cpu(),f'{out_folder}{os.path.sep}x_orig.png',nrow=4)
+            tvu.save_image((x_orig).cpu(),f'{out_folder}{os.path.sep}x_orig.png',nrow=int(self.config.sampling.batch_size))
 
             y_0 = H_funcs.H(x_orig) # applies degradation matrix
             y_0 = y_0 + sigma_0 * torch.randn_like(y_0) # add a little bit of noise to the corrupted vector
@@ -327,10 +323,10 @@ class Diffusion(object):
 
             for i in range(len(pinv_y_0)):
                 tvu.save_image(
-                    inverse_data_transform(config, pinv_y_0[i]), os.path.join(self.args.image_folder, f"y0_{idx_so_far + i}.png")
+                    inverse_data_transform(config, pinv_y_0[i]), os.path.join(self.args.out_dir,self.args.image_folder, f"y0_{idx_so_far + i}.png")
                 )
                 tvu.save_image(
-                    inverse_data_transform(config, x_orig[i]), os.path.join(self.args.image_folder, f"orig_{idx_so_far + i}.png")
+                    inverse_data_transform(config, x_orig[i]), os.path.join(self.args.out_dir,self.args.image_folder, f"orig_{idx_so_far + i}.png")
                 )
 
             ##Begin DDIM
@@ -346,7 +342,7 @@ class Diffusion(object):
 
             # NOTE: This means that we are producing each predicted x0, not x_{t-1} at timestep t.
             with torch.no_grad():
-                x, _ = self.sample_image(x, model, H_funcs, y_0, sigma_0, last=False, cls_fn=cls_fn, classes=classes, out_folder=out_folder)
+                x, _ = self.sample_image(x, model, H_funcs, y_0, sigma_0, last=False, cls_fn=cls_fn, classes=classes)
 
             end = time.time()
             elapsed = end - begin
@@ -376,9 +372,10 @@ class Diffusion(object):
         print("Total Average PSNR: %.2f" % avg_psnr)
         print("Number of samples: %d" % (idx_so_far - idx_init))
 
-    def sample_image(self, x, model, H_funcs, y_0, sigma_0, last=True, cls_fn=None, classes=None, out_folder='sandbox\\default'):
+    def sample_image(self, x, model, H_funcs, y_0, sigma_0, last=True, cls_fn=None, classes=None):
         skip = self.num_timesteps // self.args.timesteps
         seq = range(0, self.num_timesteps, skip)
+        out_folder = os.path.join(self.config.args.out_dir,f'{self.config.data.dataset}-{self.config.args.deg}')
         
         x = efficient_generalized_steps(x, seq, model, self.betas, H_funcs, y_0, sigma_0, \
             etaB=self.args.etaB, etaA=self.args.eta, etaC=self.args.eta, cls_fn=cls_fn, classes=classes, out_folder=out_folder)

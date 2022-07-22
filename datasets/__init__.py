@@ -3,8 +3,8 @@ import torch
 import numbers
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as F
-from datasets.celeba import CelebA
-from datasets.lsun import LSUN
+from ddrm_codes_2.datasets.celeba import CelebA
+from ddrm_codes_2.datasets.lsun import LSUN
 from torch.utils.data import Subset
 import numpy as np
 import torchvision
@@ -25,6 +25,15 @@ class Crop(object):
         return self.__class__.__name__ + "(x1={}, x2={}, y1={}, y2={})".format(
             self.x1, self.x2, self.y1, self.y2
         )
+
+def custom_pil_loader(path: str) -> Image.Image:
+    # open path as file to avoid ResourceWarning (https://github.com/python-pillow/Pillow/issues/835)
+    with open(path, 'rb') as f:
+        return Image.open(f).copy()
+
+def npy_loader(path: str):
+    # open path as file to avoid ResourceWarning (https://github.com/python-pillow/Pillow/issues/835)
+    return np.load(path)
 
 def center_crop_arr(pil_image, image_size = 256):
     # Imported from openai/guided-diffusion
@@ -47,7 +56,7 @@ def center_crop_arr(pil_image, image_size = 256):
 def get_dataset(args, config):
     if config.data.random_flip is False:
         tran_transform = test_transform = transforms.Compose(
-            [transforms.Resize(config.data.image_size), transforms.ToTensor()]
+            [transforms.ToTensor(), transforms.Resize(config.data.image_size)]
         )
     else:
         tran_transform = transforms.Compose(
@@ -183,6 +192,37 @@ def get_dataset(args, config):
                 transforms.ToTensor()])
             )
             test_dataset = dataset
+    elif config.data.dataset == "USGS_monterey_bay":
+        dataset = torchvision.datasets.ImageFolder(
+                os.path.join(config.args.data_dir, config.args.data_folder),
+                transform=transforms.Compose([
+                    transforms.Resize(config.data.image_size),
+                    transforms.CenterCrop(config.data.image_size),
+                    transforms.ToTensor()]), 
+                loader=custom_pil_loader
+            )
+        test_dataset = dataset
+    elif config.data.dataset == "USGS_monterey_bay_npy":
+        dataset = torchvision.datasets.ImageFolder(
+                os.path.join(config.args.data_dir, config.args.data_folder),
+                transform=transforms.Compose([
+                    transforms.ToPILImage(),
+                    transforms.Resize(config.data.image_size),
+                    transforms.CenterCrop(config.data.image_size),
+                    transforms.ToTensor()]), 
+                loader=npy_loader
+            )
+        test_dataset = dataset
+    elif 'MBARI' in config.args.data_folder:
+        dataset = torchvision.datasets.ImageFolder(
+                os.path.join(config.args.data_dir, config.args.data_folder),
+                transform=transforms.Compose([
+                    transforms.Resize(config.data.image_size),
+                    transforms.CenterCrop(config.data.image_size),
+                    transforms.ToTensor()]), 
+                loader=custom_pil_loader
+            )
+        test_dataset = dataset
     else:
         dataset, test_dataset = None, None
 
