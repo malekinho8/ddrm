@@ -57,13 +57,13 @@ def get_ckpt_path(name, root=None, check=False, prefix='exp'):
         name = name.replace('church_outdoor', 'church')
     assert name in URL_MAP
     # Modify the path when necessary
-    cachedir = os.environ.get("XDG_CACHE_HOME", os.path.join(prefix, "logs/"))
+    cachedir = os.environ.get("XDG_CACHE_HOME", os.path.join(prefix, "logs"))
     root = (
         root
         if root is not None
         else os.path.join(cachedir, "diffusion_models_converted")
     )
-    path = os.path.join(root, CKPT_MAP[name])
+    path = os.path.join(root, CKPT_MAP[name].replace('/',os.path.sep))
     if not os.path.exists(path) or (check and not md5_hash(path) == MD5_MAP[name]):
         print("Downloading {} model from {} to {}".format(name, URL_MAP[name], path))
         download(URL_MAP[name], path)

@@ -2,20 +2,41 @@ import torch
 from tqdm import tqdm
 import torchvision.utils as tvu
 import os
+from ddrm_codes_2.datasets import inverse_data_transform
 
 def compute_alpha(beta, t):
     beta = torch.cat([torch.zeros(1).to(beta.device), beta], dim=0)
     a = (1 - beta).cumprod(dim=0).index_select(0, t + 1).view(-1, 1, 1, 1)
     return a
 
-def efficient_generalized_steps(x, seq, model, b, H_funcs, y_0, sigma_0, etaB, etaA, etaC, cls_fn=None, classes=None):
+def efficient_generalized_steps(x, seq, model, pred_noise, b, H_funcs, y_0, sigma_0, etaB, etaA, etaC, cls_fn=None, classes=None, out_folder=None):
+    """ This function seeks to restore a given noisy sample (y_0) by by utilizing a pre-trained diffusion model in concjuction with linear inverse approaches.
+
+    Args:
+        x: gaussian noise in the form of a torch.tensor with the same shape as the input/output of the model
+        seq: a range containing the steps over which to iterate, i.e. range(1000, 50, 0)
+        model: the trained diffusion model neural network which takes in as an input a noisy sample (x), and a timestep (t)
+        pred_noise: bool, If True, the neural network output will be used to infer x0 using Equation 9 from Nichol et. al 2021. If False, the output will be the x0 prediction.
+        sigma_0: the std of noise added to the original clean sample, if the quantity is known
+        etaB: a parameter of the DDRM process that controls how much the output is affected by y_0, i.e. etaB = 0 means no conditioning, and etaB = 1 implies as much conditioning as possible
+        etaA: not entirely sure, default value is 1
+        etaC: not entirely sure, default value is 1
+        cls_fn: default None; if the diffusion model was also conditioned on a class variable
+        classes: default None; same as above
+        out_folder: default None; if you want to output the DDRM reverse process to a folder for inspection, specify a string to a path here
+    
+    Returns:
+        xs: a list containing x_T all the way to x_0
+        x0_preds: a list containing the output of the neural network at each step
+
+    """
     with torch.no_grad():
         #setup vectors used in the algorithm
         singulars = H_funcs.singulars()
         Sigma = torch.zeros(x.shape[1]*x.shape[2]*x.shape[3], device=x.device)
         Sigma[:singulars.shape[0]] = singulars
         U_t_y = H_funcs.Ut(y_0)
-        Sig_inv_U_t_y = U_t_y / singulars[:U_t_y.shape[-1]]
+        Sig_inv_U_t_y = U_t_y / singulars[:U_t_y.shape[-1]] # not sure why they index up to the shape of U_t_y
 
         #initialize x_T as given in the paper
         largest_alphas = compute_alpha(b, (torch.ones(x.size(0)) * seq[-1]).to(x.device).long())
@@ -48,18 +69,31 @@ def efficient_generalized_steps(x, seq, model, b, H_funcs, y_0, sigma_0, etaB, e
             next_t = (torch.ones(n) * j).to(x.device)
             at = compute_alpha(b, t.long())
             at_next = compute_alpha(b, next_t.long())
-            xt = xs[-1].to('cuda')
-            if cls_fn == None:
-                et = model(xt, t)
+            xt = xs[-1].to(x.device)
+            if pred_noise:
+                if cls_fn == None:
+                    et = model(xt, t)
+                else:
+                    et = model(xt, t, classes)
+                    et = et[:, :3]
+                    et = et - (1 - at).sqrt()[0,0,0,0] * cls_fn(x,t,classes)
+                
+                if et.size(1) == 6:
+                    et = et[:, :3]
+                
+                x0_t = (xt - et * (1 - at).sqrt()) / at.sqrt()
             else:
-                et = model(xt, t, classes)
-                et = et[:, :3]
-                et = et - (1 - at).sqrt()[0,0,0,0] * cls_fn(x,t,classes)
-            
-            if et.size(1) == 6:
-                et = et[:, :3]
-            
-            x0_t = (xt - et * (1 - at).sqrt()) / at.sqrt()
+                if cls_fn == None:
+                    et = model(xt, t)
+                else:
+                    et = model(xt, t, classes)
+                    et = et[:, :3]
+                    et = et - (1 - at).sqrt()[0,0,0,0] * cls_fn(x,t,classes)
+                
+                if et.size(1) == 6:
+                    et = et[:, :3]
+                
+                x0_t = et            
 
             #variational inference conditioned on y
             sigma = (1 - at).sqrt()[0, 0, 0, 0] / at.sqrt()[0, 0, 0, 0]
@@ -96,8 +130,18 @@ def efficient_generalized_steps(x, seq, model, b, H_funcs, y_0, sigma_0, etaB, e
                 (Sig_inv_U_t_y[:, cond_before_lite] * etaB + (1 - etaB) * V_t_x0[:, cond_before] + diff_sigma_t_nextB * torch.randn_like(U_t_y)[:, cond_before_lite])
 
             #aggregate all 3 cases and give next prediction
-            xt_mod_next = H_funcs.V(Vt_xt_mod_next)
+            xt_mod_next = H_funcs.V(Vt_xt_mod_next) 
             xt_next = (at_next.sqrt()[0, 0, 0, 0] * xt_mod_next).view(*x.shape)
+
+            class config:
+                class data:
+                    rescaled = True
+                    logit_transform = False
+
+            if out_folder is not None:
+                tvu.save_image(inverse_data_transform(config,xt_next.cpu()),f'{out_folder}{os.path.sep}xt_next_{i}.png',nrow=int(xt_next.shape[0]**0.5))
+                tvu.save_image(inverse_data_transform(config,et.cpu()),f'{out_folder}{os.path.sep}et_{i}.png',nrow=int(xt_next.shape[0]**0.5))
+                tvu.save_image(inverse_data_transform(config,x0_t.cpu()),f'{out_folder}{os.path.sep}x0_t_{i}.png',nrow=int(xt_next.shape[0]**0.5))
 
             x0_preds.append(x0_t.to('cpu'))
             xs.append(xt_next.to('cpu'))
